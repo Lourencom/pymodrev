@@ -24,7 +24,7 @@ requirements:
     - colomoto_jupyter >=0.6.3
 
 about:
-  home:  https://filipegouveia.github.io/ModRev/
+  home: https://github.com/Lourencom/modrev-python
   summary: 'Python interface for ModRev'
   license_family: LGPL
   license: LGPL v3+/CeCILL-C
