@@ -1,0 +1,30 @@
+{% set name = "ginsim-python" %}
+{% set version = "9999" %}
+package:
+  name: '{{ name|lower }}'
+  version: '{{ version }}'
+
+source:
+  path: ../
+
+build:
+  number: 0
+  script: python setup.py install --single-version-externally-managed --record=record.txt
+  noarch: python
+
+requirements:
+  build:
+    - python
+    - setuptools
+
+  run:
+    - python
+    - modrev
+    - py4j
+    - colomoto_jupyter >=0.6.3
+
+about:
+  home:  https://filipegouveia.github.io/ModRev/
+  summary: 'Python interface for ModRev'
+  license_family: LGPL
+  license: LGPL v3+/CeCILL-C
