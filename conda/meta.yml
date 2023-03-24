@@ -1,4 +1,4 @@
-{% set name = "ginsim-python" %}
+{% set name = "modrev-python" %}
 {% set version = "9999" %}
 package:
   name: '{{ name|lower }}'
