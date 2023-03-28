@@ -14,5 +14,4 @@ setup(name=NAME,
         "colomoto_jupyter >= 0.6.3",
     ],
     py_modules = ["modrev_setup"],
-    packages = find_packages()
 )
