@@ -1,18 +1,12 @@
 from setuptools import setup, find_packages
 
-NAME = 'modrev'
-
-setup(name=NAME,
-    version='9999',
-    author = "Lourenco Matos",
-    author_email = "lourencodematos@gmail.com",
-    url = "https://github.com/Lourencom/modrev-python",
-    description = "Python interface to ModRev",
-    long_description = """Provides interface to ModRev""",
-    install_requires = [
-        "py4j",
-        "colomoto_jupyter >= 0.6.3",
-    ],
-    py_modules = ["modrev_setup"],
-    packages = find_packages()
-)
+setup(name='pymodrev',
+      version='1.0',
+      author="Lourenco Matos",
+      author_email="lourencodematos@gmail.com",
+      url="https://github.com/Lourencom/pymodrev",
+      description="A Python interface to the ModRev Software Tool",
+      packages=find_packages(),
+      install_requires=[
+          "colomoto_jupyter >= 0.6.3"]
+      )

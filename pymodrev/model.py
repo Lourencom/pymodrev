@@ -1,6 +1,4 @@
-# modrev-python/__init__.py
 import re
-
 
 class ModRevModel:
     def __init__(self):
@@ -17,6 +15,20 @@ class ModRevModel:
 
     def add_function(self, function_type, node, *args):
         self.functions.append((function_type, node, args))
+
+    def show_state(self):
+        """Print the current state of the model"""
+        print("Nodes:")
+        for node in self.nodes:
+            print(node)
+
+        print("\nEdges:")
+        for edge in self.edges:
+            print(edge)
+
+        print("\nFunctions:")
+        for function in self.functions:
+            print(function)
 
 
 def load(filename):
