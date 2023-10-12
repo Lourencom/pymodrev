@@ -1,7 +1,6 @@
-{% set name = "pymodrev" %}
 {% set version = "1.0" %}
 package:
-  name: '{{ name }}'
+  name: 'pymodrev'
   version: '{{ version }}'
 
 source:
@@ -14,7 +13,7 @@ requirements:
 
   run:
     - python
-    - colomoto_jupyter >=0.6.3
+    - colomoto_jupyter
     - modrev
 
 about:

@@ -7,6 +7,4 @@ setup(name='pymodrev',
       url="https://github.com/Lourencom/pymodrev",
       description="A Python interface to the ModRev Software Tool",
       packages=find_packages(),
-      install_requires=[
-          "colomoto_jupyter >= 0.6.3"]
       )
