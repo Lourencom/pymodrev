@@ -1,4 +1,5 @@
-import re
+import re, subprocess, json
+
 
 # node(id)
 class Node:
@@ -156,13 +157,61 @@ class ModRevModel:
 
                 for term in range(len(function.terms)):
                     for regulator in function.terms[term]:
-                        file.write(f"functionAnd({function.source},{term+1},{regulator}). ")
+                        file.write(f"functionAnd({function.source},{term + 1},{regulator}). ")
 
                 file.write("\n")
 
 
-# Example usage
-model = ModRevModel()
-model.load_from_file("filename.lp")
-model.save_to_file("filename2.lp")
-print(model)
+def run_modrev(filename, obs_file=None, check_consistency=False, verbose=2):
+    command = ["./ModRev/src/modrev", "-m", filename]
+
+    if obs_file:
+        command.extend(["-obs", obs_file])
+
+    if check_consistency:
+        command.append("-cc")
+
+    command.extend(["-v", str(verbose)])
+
+    result = subprocess.run(command, capture_output=True, text=True)
+    return result.stdout
+
+
+def check_consistency(filename, obs_file=None):
+    json_output = run_modrev(filename, obs_file, check_consistency=True)
+
+    try:
+        data = json.loads(json_output)
+        consistent = data["consistent"]
+        inconsistencies = data.get("inconsistencies", [])
+
+        if consistent:
+            return "This network is Consistent!"
+        else:
+            return "This network is Inconsistent."
+
+    except json.JSONDecodeError:
+
+        # Handle cases where the output is not in JSON format
+        raise ValueError("Output is not in valid JSON format")
+
+
+def check_possible_repair(filename, obs_file=None):
+    output = run_modrev(filename, obs_file, verbose=0)
+
+    if "not possible" in output:
+        return "Not possible to repair network for now."
+
+    match = re.search(r'(\w+)@F,(.+)', output)
+    if match:
+        node, repair_function = match.groups()
+        return f"Node {node} can be repaired with function: {repair_function}"
+
+
+if __name__ == "__main__":
+    # Example usage
+    model = ModRevModel()
+    model.load_from_file("ModRev/examples/model.lp")
+
+    print(check_consistency("ModRev/examples/model.lp", "ModRev/examples/obsTS01.lp"))
+    print(check_possible_repair("ModRev/examples/model.lp", "ModRev/examples/obsTS02.lp"))
