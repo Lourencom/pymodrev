@@ -1,4 +1,4 @@
-import re, subprocess, json
+import re, subprocess, json, os
 
 
 # node(id)
@@ -163,7 +163,9 @@ class ModRevModel:
 
 
 def run_modrev(filename, obs_file=None, check_consistency=False, verbose=2):
-    command = ["./ModRev/src/modrev", "-m", filename]
+    # load absolute path to modrev executable
+    modrev_path = os.path.join(os.path.dirname(__file__), "../examples/ModRev/src/modrev")
+    command = [modrev_path, "-m", filename]
 
     if obs_file:
         command.extend(["-obs", obs_file])
@@ -172,7 +174,7 @@ def run_modrev(filename, obs_file=None, check_consistency=False, verbose=2):
         command.append("-cc")
 
     command.extend(["-v", str(verbose)])
-
+    print(command)
     result = subprocess.run(command, capture_output=True, text=True)
     return result.stdout
 
@@ -209,9 +211,8 @@ def check_possible_repair(filename, obs_file=None):
 
 
 if __name__ == "__main__":
-    # Example usage
     model = ModRevModel()
-    model.load_from_file("ModRev/examples/model.lp")
-
-    print(check_consistency("ModRev/examples/model.lp", "ModRev/examples/obsTS01.lp"))
-    print(check_possible_repair("ModRev/examples/model.lp", "ModRev/examples/obsTS02.lp"))
+    model.load_from_file("../examples/model.lp")
+    print(model)
+    print(check_consistency("../examples/model.lp", "../examples/obsTS02.lp"))
+    print(check_possible_repair("../examples/model.lp", "../examples/obsTS02.lp"))

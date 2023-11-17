@@ -8,3 +8,5 @@
 .idea/inspectionProfiles/profiles_settings.xml
 .idea/vcs.xml
 hello.lp
+examples/
+.ipynb_checkpoints/
