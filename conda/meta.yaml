@@ -1,14 +1,17 @@
-{% set version = "1.0" %}
 package:
   name: 'pymodrev'
-  version: '{{ version }}'
+  version: 1.2
 
 source:
   path: ../
 
+build:
+  script: python -m pip install --no-deps --ignore-installed .
+  noarch: python
+
 requirements:
   build:
-    - python
+    - python >=3.10
     - setuptools
 
   run:

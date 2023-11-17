@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(name='pymodrev',
-      version='1.0',
+      version='1.2',
       author="Lourenco Matos",
       author_email="lourencodematos@gmail.com",
       url="https://github.com/Lourencom/pymodrev",
