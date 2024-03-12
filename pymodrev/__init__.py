@@ -1,8 +1,10 @@
+from colomoto_jupyter.sessionfiles import new_output_file
 from py4j.java_gateway import JavaGateway, GatewayParameters, JavaObject
 import subprocess, json, os
-from colomoto_jupyter.sessionfiles import new_output_file
 
 from ginsim.gateway import japi
+import biolqm
+
 
 def reduce_to_prime_implicants(lqm):
     # japi.java is gateway
@@ -32,16 +34,15 @@ def reduce_to_prime_implicants(lqm):
 
 def save(model, format=None):
     filename = new_output_file(format)
-    assert japi.lqm.save(model, filename, format)
-    return filename
+    return biolqm.save(model, filename, format)
 
 
 class ModRev:
-    modrev_path = "/home/lourenco/research/colomoto/ModRev/src/modrev"
+    modrev_path = "/opt/ModRev/modrev"
 
     def __init__(self, lqm):
         self.lqm = lqm  # bioLQM model JavaObject
-        self.prime_impl = reduce_to_prime_implicants(lqm)
+        # self.prime_impl = reduce_to_prime_implicants(lqm)
         self._save_model_to_modrev_file()
         self.dirty_flag = False
         self.observations = {}
@@ -132,7 +133,6 @@ class ModRev:
             key = len(self.repairs.keys())
             self.repairs[key] = line
             print(f"Repair {key}: {line}")
-
 
     def generate_repairs(self, repair):
         """
