@@ -10,3 +10,6 @@
 hello.lp
 examples/
 .ipynb_checkpoints/
+build/
+dist/
+pymodrev.egg-info
