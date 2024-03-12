@@ -1,218 +1,157 @@
-import re, subprocess, json, os
+from py4j.java_gateway import JavaGateway, GatewayParameters, JavaObject
+import subprocess, json, os
+from colomoto_jupyter.sessionfiles import new_output_file
+
+from ginsim.gateway import japi
 
 
-# node(id)
-class Node:
-    def __init__(self, id):
-        self.id = id
-
-    def __repr__(self):
-        return f"Node({self.id})"
+def save(model, filename, format=None):
+    assert japi.lqm.save(model, filename, format)
+    return filename
 
 
-# edge(source, target, weight)
-class Edge:
-    def __init__(self, source, target, weight):
-        self.source = source
-        self.target = target
-        self.weight = weight
+def reduce_to_prime_implicants(lqm):
+    # japi.java is gateway
+    if not isinstance(lqm, JavaObject):
+        raise ValueError("Expected a JavaObject")
 
-    def __repr__(self):
-        return f"Edge({self.source}, {self.target}, {self.weight})"
+    dd_manager = lqm.getMDDManager()
+    core_functions = lqm.getLogicalFunctions()
 
+    MDD2PrimeImplicants_class = japi.java.jvm.org.colomoto.biolqm.helper.implicants.MDD2PrimeImplicants
+    formulas = MDD2PrimeImplicants_class(dd_manager)
+    new_formulas = []
+    components = lqm.getComponents()
 
-# functionAnd(source, term, regulator)
-class ANDFunction:
-    def __init__(self, source, term, regulator):
-        self.source = source
-        self.term = term
-        self.regulator = regulator
+    for i in range(len(core_functions)):
+        node = components.get(i)
+        function = core_functions[i]
 
-    def __repr__(self):
-        return f"ANDFunction({self.source}, {self.term}, {self.regulator})"
+        formula = formulas.reduceToPrimeImplicants(function, node)
+        new_formulas.append(formula)
 
+    LogicalModelImpl_class = japi.java.jvm.org.colomoto.biolqm.LogicalModelImpl
+    new_lqm = LogicalModelImpl_class(components, dd_manager, new_formulas)
 
-# functionOr(source, 1..n_terms)
-class ORFunction:
-    def __init__(self, source, terms):
-        self.source = source
-        self.terms = terms
-
-    def __repr__(self):
-        return f"ORFunction({self.source}, {self.terms})"
+    return new_lqm
 
 
-class BooleanFunction:
-    def __init__(self, source, n_terms):
-        self.source = source
-        self.terms = [[] for _ in range(n_terms)]
+class ModRev:
+    modrev_path = "/home/lourenco/research/colomoto/ModRev/src/modrev"
 
-    def add_term_regulator(self, term, regulator):
-        real_term = term - 1
-        if real_term < 0 or real_term >= len(self.terms):
-            raise IndexError("Invalid term index")
-        self.terms[real_term].append(regulator)
+    def __init__(self, lqm):
+        self.lqm = lqm  # bioLQM model JavaObject
 
-    def __repr__(self):
-        term_expressions = [' and '.join(term) for term in self.terms if term]
-        full_expression = ' or '.join(f"({expr})" if expr else "" for expr in term_expressions)
+        self.prime_impl = reduce_to_prime_implicants(lqm)
 
-        return f"{self.source} = {full_expression}"
+        # file with lqm model in modrev format
+        # fixme: format "lp" must come in the bioLQM dependency in colomoto-docker/jupyter
+        modrev_file = new_output_file("lp")
+        self.modrev_file = save(self.lqm, modrev_file, "lp")
 
+        self.dirty_flag = False  # bool to indicate if the object has been modified
+        self.obs_dict = {}  # dict to store observations
 
-# Dict of nodes with key = node id and value = node object
-# Dict of functions with key = node id and value = node_boolean_function
-# Dict of edges with key = source and value = dict(target : weight)
-class ModRevModel:
-    def __init__(self):
-        self.nodes = {}
-        self.functions = {}
-        self.edges = {}
+    def add_obs(self, *args, **kwargs):
+        """
+        Adds observations to the model. This function can handle a single observation
+        with an optional label, or a dictionary of observations.
 
-    def __repr__(self):
-        node_repr = "Nodes:\n" + "\n".join(f"{node}" for node in self.nodes.values())
-        edge_repr = "Edges:\n" + "\n".join(f"{source}->{target}: {weight}"
-                                           for source, edges in self.edges.items()
-                                           for target, weight in edges.items())
-        function_repr = "Functions:\n" + "\n".join(f"{function}"
-                                                   for function in self.functions.values())
+        Usage:
+        - add_obs(observation, name="some_label")
+        - add_obs({"label1": observation1, "label2": observation2})
+        """
 
-        return f"{node_repr}\n{edge_repr}\n{function_repr}"
+        # If the first argument is a dictionary, we assume it's a bulk addition of observations.
+        if len(args) == 1 and isinstance(args[0], dict):
+            for name, obs in args[0].items():
+                self._add_single_observation(obs, name)
 
-    def add_node(self, node_id):
-        if node_id not in self.nodes:
-            node = Node(node_id)
-            self.nodes[node.id] = node
+        # If there are two arguments, we assume it's a single observation with a label.
+        elif len(args) == 1 and 'name' in kwargs:
+            self._add_single_observation(args[0], kwargs['name'])
 
-    def add_edge(self, source, target, weight):
-        self.add_node(source)
-        self.add_node(target)
+        # If there's only one argument without a name, it's a single unnamed observation.
+        elif len(args) == 1:
+            self._add_single_observation(args[0], name=None)
 
-        edge = Edge(source, target, weight)
-
-        if source not in self.edges:
-            self.edges[source] = {}
-
-        self.edges[source][target] = weight
-
-    # Creates the boolean function that will define the node, after reading functionOr(node, 1..n_terms)
-    def create_boolean_function(self, node_id, n_terms):
-        if node_id not in self.nodes:
-            raise ValueError(f"Invalid node id when processing functionOr{node_id, n_terms}")
-
-        function = BooleanFunction(node_id, n_terms)
-
-        self.functions[node_id] = function
-
-    # Adds a term to the boolean function of a node, after reading functionAnd(node, term, regulator)
-    def update_boolean_function(self, node_id, term, regulator):
-        if (node_id or regulator) not in self.nodes:
-            raise ValueError(f"Invalid node id or regulator when processing functionAnd{node_id, term, regulator}")
-
-        self.functions[node_id].add_term_regulator(term, regulator)
-
-    def get_boolean_function(self, node_id):
-        return self.functions[node_id]
-
-    def load_from_file(self, filename):
-        with open(filename, 'r') as file:
-            for line in file:
-                # Process vertices
-                for match in re.finditer(r'vertex\((.+?)\)', line):
-                    node_id = match.group(1)
-                    self.add_node(node_id)
-
-                # Process edges
-                for match in re.finditer(r'edge\((.+?),(.+?),(.*?)\)', line):
-                    source, target, weight = match.groups()
-                    self.add_edge(source, target, int(weight))
-
-                # Process functionOr(source, 1..n_terms)
-                for match in re.finditer(r'functionOr\((.+?),1\.\.(.*?)\)', line):
-                    node_id, n_terms = match.groups()
-                    self.create_boolean_function(node_id, int(n_terms))
-
-                # Process functionAnd
-                for match in re.finditer(r'functionAnd\((.+?),(.*?),(.*?)\)', line):
-                    node_id, term, regulator = match.groups()
-                    self.update_boolean_function(node_id, int(term), regulator)
-
-    def save_to_file(self, filename):
-        with open(filename, 'w') as file:
-            # Write vertices
-            for node in self.nodes.values():
-                file.write(f"vertex({node.id}).")
-
-            file.write("\n")
-
-            # Write edges
-            for source, edges in self.edges.items():
-                for target, weight in edges.items():
-                    file.write(f"edge({source},{target},{weight}).\n")
-
-            # Write functions
-            for function in self.functions.values():
-                n_terms = len(function.terms)
-                file.write(f"functionOr({function.source},1..{n_terms}).\n")
-
-                for term in range(len(function.terms)):
-                    for regulator in function.terms[term]:
-                        file.write(f"functionAnd({function.source},{term + 1},{regulator}). ")
-
-                file.write("\n")
-
-
-def run_modrev(filename, obs_file=None, check_consistency=False, verbose=2):
-    # load absolute path to modrev executable
-    modrev_path = os.path.join(os.path.dirname(__file__), "../examples/ModRev/src/modrev")
-    command = [modrev_path, "-m", filename]
-
-    if obs_file:
-        command.extend(["-obs", obs_file])
-
-    if check_consistency:
-        command.append("-cc")
-
-    command.extend(["-v", str(verbose)])
-    print(command)
-    result = subprocess.run(command, capture_output=True, text=True)
-    return result.stdout
-
-
-def check_consistency(filename, obs_file=None):
-    json_output = run_modrev(filename, obs_file, check_consistency=True)
-
-    try:
-        data = json.loads(json_output)
-        consistent = data["consistent"]
-        inconsistencies = data.get("inconsistencies", [])
-
-        if consistent:
-            return "This network is Consistent!"
+        # Otherwise, it's an error.
         else:
-            return "This network is Inconsistent."
+            raise ValueError("Invalid arguments for add_obs.")
 
-    except json.JSONDecodeError:
+    def _add_single_observation(self, obs, name=None):
+        """
+        Private helper method to add a single observation to the model.
+        """
+        # Update dirty flag and observations dictionary
+        self.dirty_flag = True
+        if name:
+            self.obs_dict[name] = obs
+        else:
+            # Handle unnamed observation
+            self.obs_dict[f"observation_{len(self.obs_dict) + 1}"] = obs
 
-        # Handle cases where the output is not in JSON format
-        raise ValueError("Output is not in valid JSON format")
+    def is_consistent(self):
+        """
+        Checks if the current state of the model is consistent
+        """
+        # saves lqm model onto file
+        # fixme: needs to take into account obs_dict
+        if self.dirty_flag:
+            self.modrev_file = save(self.lqm, self.modrev_file, "lp")
+            self.dirty_flag = False
+            
+        # runs modrev on files
+        try:
+            # Run modrev with the given model file to check consistency
+            result = subprocess.run(
+                [self.modrev_path, '-m', self.modrev_file, '-cc', '-v', '0'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
 
+            if result.returncode != 0:
+                # There was an error running modrev
+                print(f"Error running modrev: {result}")
+                return False
 
-def check_possible_repair(filename, obs_file=None):
-    output = run_modrev(filename, obs_file, verbose=0)
+            # checks if output is consistent
+            # outpusts modrev answer
+            output = json.loads(result.stdout)
+            return output.get("consistent", False)
 
-    if "not possible" in output:
-        return "Not possible to repair network for now."
+        except Exception as e:
+            # Handle the case where modrev output is not valid JSON
+            print(f"Error parsing modrev output: {e}")
+            return False
 
-    match = re.search(r'(\w+)@F,(.+)', output)
-    if match:
-        node, repair_function = match.groups()
-        return f"Node {node} can be repaired with function: {repair_function}"
+    def remove_obs(self, key):
+        """
+        Removes an observation from the dict by key
+        """
+        self.obs_dict.pop(key)
 
+    def set_obs(self, observations_dict):
+        """
+        Sets the observation dict
+        """
+        self.obs_dict = observations_dict
 
-if __name__ == "__main__":
-    model = ModRevModel()
-    model.load_from_file("../examples/model.lp")
-    print(model)
-    print(check_consistency("../examples/model.lp", "../examples/obsTS02.lp"))
-    print(check_possible_repair("../examples/model.lp", "../examples/obsTS02.lp"))
+    def stats(self):
+        """
+        Shows possible reparation actions in a friendly manner
+        """
+        # implementation here
+        # save (lqm.to_modrev())
+        # run modrev on modrev file
+        # parse output
+        # return possible repairs
+
+    def generate_repairs(self, repair):
+        """
+        Generates a list of fixed lqm models (as JavaObjects)
+        """
+        # clones the lqm model
+        # applies the repair directly on bioLQM
+        # returns all the generated models in the repair process
