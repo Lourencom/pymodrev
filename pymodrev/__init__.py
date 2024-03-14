@@ -44,7 +44,6 @@ class ModRev:
         self.lqm = lqm  # bioLQM model JavaObject
         # self.prime_impl = reduce_to_prime_implicants(lqm)
         self._save_model_to_modrev_file()
-        self.dirty_flag = False
         self.observations = {}
         self.repairs = {}
 
@@ -52,7 +51,6 @@ class ModRev:
         """
         Saves the current model to a file in modrev format
         """
-        # fixme: format "lp" must come in the bioLQM dependency in colomoto-docker/jupyter
         self.modrev_file = save(self.lqm, "lp")
         self.dirty_flag = False
 
@@ -72,20 +70,77 @@ class ModRev:
             print(f"Error running modrev: {e}")
             return None
 
+    def _expand_observations_recursively(self, current_profile, current_nodes, path=[]):
+        expanded_observations = {}
+        has_wildcard = False
+
+        for node, value in current_nodes.items():
+            if value == '*':
+                has_wildcard = True
+                for replacement_value in (0, 1):
+                    # Clone the current nodes and replace '*' with 0 or 1
+                    new_nodes = current_nodes.copy()
+                    new_nodes[node] = replacement_value
+                    new_path = path + [(node, replacement_value)]
+                    expanded_observations.update(
+                        self._expand_observations_recursively(current_profile, new_nodes, new_path))
+                break  # Exit the loop after handling the first wildcard
+
+        if not has_wildcard:
+            # Generate a unique profile name based on the path of replacements
+            new_profile_name = current_profile + ''.join([f"_{node}_{value}" for node, value in path])
+            expanded_observations[new_profile_name] = current_nodes
+
+        return expanded_observations
+
+    def _expand_observations(self):
+        expanded_observations = {}
+        for profile, nodes in self.observations.items():
+            expanded_observations.update(self._expand_observations_recursively(profile, nodes))
+        return expanded_observations
+
+    def obs_to_modrev_format(self):
+        expanded_observations = self._expand_observations()
+
+        observation_filename = new_output_file("lp")
+
+        with open(observation_filename, 'w') as file:
+            for profile, nodes in expanded_observations.items():
+                file.write(f"exp({profile})\n")
+
+                for node, value in nodes.items():
+                    file.write(f"obs({profile}, {node.lower()}, {value})\n")
+
+        print(f"Observations were successfully written to {observation_filename}")
+        return observation_filename
+
     def add_obs(self, obs, name=None):
+        """
+        Adds an observation to the dict
+        # Example dictionary of observations
+        observations = {
+            "obs_1": [0, 1, "*", 1, 0],  # Example ModelState as a list
+            "obs_2": {"node1": 0, "node2": 1, "node3": "*", "node4": 1, "node5": 0}  # As a dict
+        }
+        :param obs:
+        :param name:
+        :return:
+        """
         self.dirty_flag = True
-        if isinstance(obs, dict):
-            self.observations.update(obs)
-        else:
-            self.observations[name if name else f"observation_{len(self.observations) + 1}"] = obs
+        if not name:
+            name = f"observation_{len(self.observations.keys()) + 1}"
+        self.observations[name] = obs
 
     def is_consistent(self):
         """
         Checks if the current state of the model is consistent
         """
-        # todo: needs to take into account observations
+        # TODO: needs to take into account observations
         if self.dirty_flag:
             self._save_model_to_modrev_file()
+
+        with open(self.modrev_file, "r") as f:
+            print(f.readlines())
 
         result = self._run_modrev('-m', self.modrev_file, '-v', '0', '-cc')
 
@@ -100,8 +155,9 @@ class ModRev:
         """
         Removes an observation from the dict by key
         """
-        self.observations.pop(key)
-        self.dirty_flag = True
+        if key in self.observations:
+            self.observations.pop(key)
+            self.dirty_flag = True
 
     def set_obs(self, observations_dict):
         """
@@ -114,7 +170,7 @@ class ModRev:
         """
         Shows possible reparation actions in a friendly manner
         """
-        # todo: not taking into account observations yet
+        # TODO: needs to take into account observations
         if self.dirty_flag:
             self._save_model_to_modrev_file()
 
