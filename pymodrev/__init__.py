@@ -16,18 +16,44 @@ def reduce_to_prime_implicants(lqm):
 
     MDD2PrimeImplicants_class = japi.java.jvm.org.colomoto.biolqm.helper.implicants.MDD2PrimeImplicants
     formulas = MDD2PrimeImplicants_class(dd_manager)
-    new_formulas = []
     components = lqm.getComponents()
+    int_class = japi.java.jvm.int
+    new_functions = japi.java.new_array(int_class, len(components))
 
     for i in range(len(core_functions)):
-        node = components.get(i)
         function = core_functions[i]
+        print("------------------------------")
+        print(f"Component: {components[i]}")
+        print(f"Function: {bin(function)}")
 
-        formula = formulas.reduceToPrimeImplicants(function, node)
-        new_formulas.append(formula)
+        # for now lets say our target value is 1
+        formula = formulas.getPrimes(function, 1)
+        print("Reduced formula: ", formula.toString())
+        function_reduced = formula.toArray()
+
+        simplified_terms = []
+        for term_array in function_reduced:
+            term_elements = []
+            for term_index in range(len(term_array)):
+                element = f"{components.get(formula.regulators[term_index]).getNodeID()}"
+                if term_array[term_index] == 0:
+                    term_elements.append( "!" + element)
+                elif term_array[term_index] == 1:
+                    term_elements.append(element)
+            term = "(" + " && ".join(term_elements) + ")"
+            simplified_terms.append(term)
+
+        final_simplified_function = " || ".join(simplified_terms)
+        print(f"Final simplified function: {final_simplified_function}")
+
+        for i in range(formula.getTerms().get(0).getNumVars()):
+            print(f"Regulator {i}: {components.get(formula.regulators[i]).getNodeID()}")
+
+        # TODO: insert new formula in the mdd
+        #new_functions[i] = function_reduced
 
     LogicalModelImpl_class = japi.java.jvm.org.colomoto.biolqm.LogicalModelImpl
-    new_lqm = LogicalModelImpl_class(components, dd_manager, new_formulas)
+    new_lqm = LogicalModelImpl_class(components, dd_manager, new_functions)
 
     return new_lqm
 
@@ -41,8 +67,10 @@ class ModRev:
     modrev_path = "/opt/ModRev/modrev"
 
     def __init__(self, lqm):
+        self.dirty_flag = None
+        self.modrev_file = None
         self.lqm = lqm  # bioLQM model JavaObject
-        # self.prime_impl = reduce_to_prime_implicants(lqm)
+        self.prime_impl = reduce_to_prime_implicants(lqm)
         self._save_model_to_modrev_file()
         self.observations = {}
         self.repairs = {}
@@ -135,14 +163,10 @@ class ModRev:
         """
         Checks if the current state of the model is consistent
         """
-        # TODO: needs to take into account observations
         if self.dirty_flag:
             self._save_model_to_modrev_file()
 
-        with open(self.modrev_file, "r") as f:
-            print(f.readlines())
-
-        result = self._run_modrev('-m', self.modrev_file, '-v', '0', '-cc')
+        result = self._run_modrev('-m', self.modrev_file, '-obs', self.obs_to_modrev_format(), '-v', '0', '-cc')
 
         if not result or result.returncode != 0:
             print(f"Error running modrev: {result}")
@@ -170,25 +194,25 @@ class ModRev:
         """
         Shows possible reparation actions in a friendly manner
         """
-        # TODO: needs to take into account observations
         if self.dirty_flag:
             self._save_model_to_modrev_file()
 
-        result = self._run_modrev('-m', self.modrev_file, '-v', '0')
+        result = self._run_modrev('-m', self.modrev_file, '-obs', self.obs_to_modrev_format(), '-v', '0')
 
         if not result or result.returncode != 0:
             print(f"Error running modrev: {result}")
             return
 
         # output of modrev comes in format:
-        # v1@F1,(v2) || (v3)
         # change function to v1 = v2 || v3
+        # v1@F1,(v2) || (v3)
         output_lines = result.stdout.split("\n")
         print("Possible repairs:")
         for line in output_lines:
             key = len(self.repairs.keys())
             self.repairs[key] = line
             print(f"Repair {key}: {line}")
+        return self.repairs
 
     def generate_repairs(self, repair):
         """
@@ -197,9 +221,15 @@ class ModRev:
         if not self.repairs[repair]:
             print("Invalid repair")
             return
+        # v1@F1,(v2) || (v3)
+        repair_action = self.repairs[repair]
+        target_node = repair_action.split("@")[0]
+        new_function = repair_action.split("@")[1]
+        print(f"Repairing {target_node} with {new_function}")
 
         # clones the lqm model
         cloned_lqm = self.lqm.clone()
 
-        # todo: apply repair on cloned_lqm
+        # TODO: apply repair on cloned_lqm,
+        #    editing the mdd functions directly
         # returns all the generated models in the repair process
