@@ -7,55 +7,10 @@ import biolqm
 
 
 def reduce_to_prime_implicants(lqm):
-    # japi.java is gateway
-    if not isinstance(lqm, JavaObject):
-        raise ValueError("Expected a JavaObject")
-
-    dd_manager = lqm.getMDDManager()
-    core_functions = lqm.getLogicalFunctions()
-
-    MDD2PrimeImplicants_class = japi.java.jvm.org.colomoto.biolqm.helper.implicants.MDD2PrimeImplicants
-    formulas = MDD2PrimeImplicants_class(dd_manager)
-    components = lqm.getComponents()
-    int_class = japi.java.jvm.int
-    new_functions = japi.java.new_array(int_class, len(components))
-
-    for i in range(len(core_functions)):
-        function = core_functions[i]
-        print("------------------------------")
-        print(f"Component: {components[i]}")
-        print(f"Function: {bin(function)}")
-
-        # for now lets say our target value is 1
-        formula = formulas.getPrimes(function, 1)
-        print("Reduced formula: ", formula.toString())
-        function_reduced = formula.toArray()
-
-        simplified_terms = []
-        for term_array in function_reduced:
-            term_elements = []
-            for term_index in range(len(term_array)):
-                element = f"{components.get(formula.regulators[term_index]).getNodeID()}"
-                if term_array[term_index] == 0:
-                    term_elements.append( "!" + element)
-                elif term_array[term_index] == 1:
-                    term_elements.append(element)
-            term = "(" + " && ".join(term_elements) + ")"
-            simplified_terms.append(term)
-
-        final_simplified_function = " || ".join(simplified_terms)
-        print(f"Final simplified function: {final_simplified_function}")
-
-        for i in range(formula.getTerms().get(0).getNumVars()):
-            print(f"Regulator {i}: {components.get(formula.regulators[i]).getNodeID()}")
-
-        # TODO: insert new formula in the mdd
-        #new_functions[i] = function_reduced
-
-    LogicalModelImpl_class = japi.java.jvm.org.colomoto.biolqm.LogicalModelImpl
-    new_lqm = LogicalModelImpl_class(components, dd_manager, new_functions)
-
-    return new_lqm
+    # BioLQM.ModRevExport outputs the prime implicants
+    exported_model_file = save(lqm, "lp")
+    print(f"Exported model to {exported_model_file}")
+    return biolqm.load(exported_model_file)
 
 
 def save(model, format=None):
