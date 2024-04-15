@@ -1,6 +1,5 @@
 from colomoto_jupyter.sessionfiles import new_output_file
-from py4j.java_gateway import JavaGateway, GatewayParameters, JavaObject
-import subprocess, json, os
+import subprocess, json
 
 from ginsim.gateway import japi
 import biolqm
@@ -10,7 +9,7 @@ def reduce_to_prime_implicants(lqm):
     # BioLQM.ModRevExport outputs the prime implicants
     exported_model_file = save(lqm, "lp")
     print(f"Exported model to {exported_model_file}")
-    return biolqm.load(exported_model_file)
+    return biolqm.load(exported_model_file, "lp")
 
 
 def save(model, format=None):
@@ -169,22 +168,100 @@ class ModRev:
             print(f"Repair {key}: {line}")
         return self.repairs
 
+    def parse_new_function(self, new_function):
+
+        print(f"New function: {new_function}")
+
+        function_terms = new_function.split("||")
+        function_elements = []
+        for i, term in enumerate(function_terms):
+            function_elements.append(term.split("&&"))
+
+        print(f"Function terms: {function_terms}")
+        print(f"Function elements: {function_elements}")
+
+        parsed_terms = [[item.strip().replace('(', '').replace(')', '').replace("\'", "")]
+                        for sublist in function_elements for item in sublist]
+
+        print(f"Clean data: {parsed_terms}")
+
+        return parsed_terms
+
+    def compute_new_function(self, core_nodes, core_functions, target_node, new_function):
+
+        # NOTE WE COULD JUST WRITE THE LQM FILE TO DISK, EDIT THE .lp FILE AND LOAD
+
+        OperandFactory = japi.java.jvm.org.colomoto.mddlib.logicalfunction.SimpleOperandFactory
+        operandFactory = OperandFactory(core_nodes)
+        manager = operandFactory.getMDDManager()
+
+        print(f"OperandFactory: {operandFactory}")
+        print(f"Manager: {manager}")
+
+        try:
+            i = core_nodes.index(target_node)
+            print(f"Target node: {target_node}, index: {i}")
+
+        except ValueError:
+            print(f"The value {target_node} is not in the list.")
+            return
+
+        print(f"Repairing {target_node} with {new_function}")
+
+        parsed_terms = self.parse_new_function(new_function)
+        print(f"Parsed terms: {parsed_terms}")
+
+        # compute new mdd
+        ExpressionStack = japi.java.jvm.org.colomoto.biolqm.io.antlr.ExpressionStack
+        stack = ExpressionStack(operandFactory)
+        stack.clear()
+
+        for term_index in range(len(parsed_terms)):
+            num_nodes = 0
+            for element_index in range(len(parsed_terms[term_index])):
+                stack.ident(parsed_terms[term_index][element_index])
+                num_nodes += 1
+
+                if num_nodes > 1:
+                    OperatorAnd = japi.java.jvm.org.colomoto.biolqm.io.antlr.Operator.AND
+                    stack.operator(OperatorAnd)
+
+        if len(parsed_terms) > 1:
+            OperatorOr = japi.java.jvm.org.colomoto.biolqm.io.antlr.Operator.OR
+            total_terms = len(parsed_terms)
+            while total_terms > 1:
+                stack.operator(OperatorOr)
+                total_terms -= 1
+
+        fn = stack.done()
+        core_functions[i] = fn.getMDD(manager)
+
+        return core_functions
+
     def generate_repairs(self, repair):
         """
-        Generates a list of fixed lqm models (as JavaObjects)
+
         """
         if not self.repairs[repair]:
             print("Invalid repair")
             return
-        # v1@F1,(v2) || (v3)
-        repair_action = self.repairs[repair]
-        target_node = repair_action.split("@")[0]
-        new_function = repair_action.split("@")[1]
-        print(f"Repairing {target_node} with {new_function}")
 
-        # clones the lqm model
-        cloned_lqm = self.lqm.clone()
+        repair_action = self.repairs[repair]  # v1@F1,(v2) || (v3)
+        target_node = repair_action.split("@")[0]  # v1
+        function_id = (repair_action.split("@")[1]).split(",")[0]  # F1
+        new_function = (repair_action.split("@")[1]).split(",")[1]  # (v2) || (v3)
 
-        # TODO: apply repair on cloned_lqm,
-        #    editing the mdd functions directly
-        # returns all the generated models in the repair process
+        core_nodes = self.lqm.getComponents()
+        core_functions = self.lqm.getLogicalFunctions()
+        ddmanager = self.lqm.getMDDManager()
+        print(f"Core nodes: {core_nodes}")
+        print(f"Core functions: {core_functions}")
+        print(f"DD Manager: {ddmanager}")
+
+        print("Computing new function")
+        core_functions = self.compute_new_function(core_nodes, core_functions, target_node, new_function)
+
+        LogicalModelImpl = japi.java.jvm.org.colomoto.biolqm.LogicalModelImpl
+        new_lqm = LogicalModelImpl(core_nodes, ddmanager, core_functions)
+
+        return ModRev(new_lqm)
