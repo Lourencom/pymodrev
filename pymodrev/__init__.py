@@ -38,6 +38,8 @@ class ModRev:
         """
         self.modrev_file = save(self.lqm)
         self.dirty_flag = False
+        # FIXME: just a reminder, in the java code of bioLQM, the model is always generating edges with value 1,
+        #  even when they are exported with value 0.
 
     def _run_modrev(self, *args):
         """
@@ -120,7 +122,7 @@ class ModRev:
         """
         core_nodes = self.get_nodes()
         if isinstance(obs, list) and len(obs) > len(core_nodes):
-            raise Exception(f"Observation size invalid: {len(core_nodes)}")
+            raise Exception(f"Observation size invalid: {len(obs)}. Should be at most {len(core_nodes)}.")
         if isinstance(obs, dict):
             for elem in obs.keys():
                 if elem not in core_nodes:
@@ -175,21 +177,35 @@ class ModRev:
 
         result = self._run_modrev('-m', self.modrev_file, '-obs', self.obs_to_modrev_format(), '-v', '0')
 
+
+        # FIXME: this a temporary hardcode for testing purposes
+        # result = self._run_modrev('-m', '/opt/ModRev/examples/model.lp', '-obs', '/opt/ModRev/examples/obsTS01.lp', '-up', 's', '-v', '0')
+
         if not result or result.returncode != 0:
             raise Exception(f"Error running modrev: {result}")
 
         # output of modrev comes in format:
         # change function to v1 = v2 || v3
         # v1@F1,(v2) || (v3)
-        output_lines = result.stdout.split("\n")
-        print("Possible repairs:")
-        for line in output_lines:
-            key = len(self.repairs.keys())
-            self.repairs[key] = line
-            print(f"Repair {key}: {line}")
-        return self.repairs
+        # repair: v2@E,v1,v2:F,(v1 && v3);E,v3,v2:F,(v1 && v3)
+        output = result.stdout.strip("\n")
+        inconsistent_nodes = output.split("/")  # [v2@E,v1,v2:F,(v1 && v3);E,v3,v2:F,(v1 && v3)]
 
-    def parse_new_function(self, new_function):
+        for node in inconsistent_nodes:
+            target_node, node_repairs = node.split("@")
+            repair_options = node_repairs.split(";")
+            print(f"Inconsistent node: {target_node}")
+            print(f"Repair options: {repair_options}")
+            self.repairs[target_node] = repair_options
+
+    def decompose_function(self, new_function):
+        """
+        Receives a function and decomposes it into its elements
+
+        Example:
+        :param new_function: (v2 && v1) || (v3)
+        :return: [['v2', 'v1'], ['v3']]
+        """
 
         print(f"New function: {new_function}")
 
@@ -201,142 +217,199 @@ class ModRev:
         print(f"Function terms: {function_terms}")
         print(f"Function elements: {function_elements}")
 
-        parsed_terms = [[item.strip().replace('(', '').replace(')', '')]
-                        for sublist in function_elements for item in sublist]
+        parsed_terms = []
+
+        for term in function_elements:
+            if len(term) == 1:  # simple term
+                parsed_terms.append([term[0].strip().replace('(', '').replace(')', '')])
+                continue
+
+            parsed_terms.append([elem.strip().replace('(', '').replace(')', '') for elem in term])
 
         print(f"Clean data: {parsed_terms}")
 
         return parsed_terms
 
-    def compute_new_function(self, core_nodes, core_functions, target_node, new_function):
+    def parse_new_function(self, new_function, target_node):
+        """
+        Decompose the function, and convert it to writeable modrev format.
 
-        # FIXME, manager not workings
-        # NOTE WE COULD JUST WRITE THE LQM FILE TO DISK, EDIT THE .lp FILE AND LOAD
+        Example:
+        :param new_function: (v2 && v1) || (v3)
+        :param target_node: v1
+        :return: ['functionOr(v1,1..2).', 'functionAnd(v1,1,v2).', 'functionAnd(v1,1,v1).', 'functionAnd(v1,2,v3).']
+        """
+        decomposed_function = self.decompose_function(new_function)
+        return self.convert_terms_to_functions(decomposed_function, target_node)
 
-        OperandFactory = japi.java.jvm.org.colomoto.mddlib.logicalfunction.SimpleOperandFactory
-        operandFactory = OperandFactory(core_nodes)
-        manager = operandFactory.getMDDManager()
+    def convert_terms_to_functions(self, terms, target_node):
+        """
+        Converts the terms to writeable modrev format
 
-        print(f"OperandFactory: {operandFactory}")
-        print(f"Manager: {manager}")
+        Example:
+        :param terms: [['v2'], ['v3']]
+        :param target_node: v1
+        :return: ['functionOr(v1,1..2).', 'functionAnd(v1,1,v2).', 'functionAnd(v1,2,v3).']
+        """
+        num_terms = len(terms)
 
-        try:
-            i = core_nodes.index(target_node)
-            print(f"Target node: {target_node}, index: {i}")
+        writeable_functions = []
 
-        except ValueError:
-            print(f"The value {target_node} is not in the list.")
+        Or = f"..{num_terms}" if num_terms > 1 else ""
+        OrFunction = f"functionOr({target_node},1{Or}).\n"
+        writeable_functions.append(OrFunction)
+
+        for term_index in range(len(terms)):
+            for elem in terms[term_index]:
+                AndFunction = f"functionAnd({target_node},{term_index + 1},{elem}).\n"
+                writeable_functions.append(AndFunction)
+
+        return writeable_functions
+
+    def change_function(self, repair, target_node):
+        # F1,(v2) || (v3)
+        changed_function = repair.split(",")[1]
+        return self.parse_new_function(changed_function, target_node)
+
+    def flip_edge(self, repair):
+        # E,v1,v2
+        elems = repair.split(",")
+        new_edge = f"edge({elems[1]},{elems[2]})."
+        return new_edge
+
+    def add_edge(self, repair):
+        # A,v1,v2,1
+        elems = repair.split(",")
+        new_edge = f"edge({elems[1]},{elems[2]},{elems[3]}).\n"
+        return new_edge
+
+    def convert_repair_operation(self, repair_operation, target_node):
+        """
+        Returns the repair as a string
+        """
+        # repair: v2@E,v1,v2:F,(v1 && v3);E,v3,v2:F,(v1 && v3)
+        if repair_operation.startswith("F"):  # if repair is F, ... we change function
+            return self.change_function(repair_operation, target_node)
+        elif repair_operation.startswith("E"):  # if repair is E,v1,v2, we flip sign of edge(v1,v2).
+            return self.flip_edge(repair_operation)
+        elif repair_operation.startswith("A"):  # if repair is A,v1,v2,1 we add edge(v1,v2,1)
+            return self.add_edge(repair_operation)
+        else:
+            raise Exception(f"Repair type does not exist for repair: {repair_operation}")
+
+    def get_repair_steps(self, repair_action):
+        """
+        Receives a repair action associated with a single repair option of a node,
+        which is a string in the modrev output format.
+        Example:
+        :param repair_action: E,v1,v2:F,(v1 && v3)
+        :return: ['E,v1,v2', 'F,(v1 && v3)']
+        """
+        return repair_action.split(":")
+
+    def write_new_edge(self, repair, lines):
+        """
+        Repair is a new 'edge(v1,v2,1).', add it to the file to the start of the edge listing.
+
+        :param repair: 'edge(v1,v2,1).'
+        :param lines:
+        :return:
+        """
+        first_edge_idx = next((i for i, line in enumerate(lines) if line.startswith("edge")))
+        lines.insert(first_edge_idx, repair)
+
+    def write_flip_edge(self, repair, lines):
+        """
+        Repair is a flipped 'edge(v1,v2).', find the edge(v1,v2) and flip the third element.
+
+        :param repair: 'edge(v1,v2).'
+        :param lines:
+        :return:
+        """
+        for i, line in enumerate(lines):
+            if line.startswith(repair.split(")")[0]):
+                elems = line.split(",")
+                old_sign = elems[2].split(")")[0]
+                new_sign = 1 if old_sign == "0" else 0
+                lines[i] = f"{elems[0]},{elems[1]},{new_sign}).\n"
+                break
+
+    def write_new_node_functions(self, repair, lines):
+        """
+        Repair is a new function for a node, find the functions for the target node and delete them.
+        Then write the new functions.
+
+        :param repair: ['functionOr(v1,1..2).\n', 'functionAnd(v1,1,v2).\n', 'functionAnd(v1,2,v3).\n']
+        :param lines:
+        :return:
+        """
+        target_node = repair[0].split("(")[1].split(",")[0]
+
+        # Find the functions for the target node and delete them
+        possible_matches = ["functionOr(" + target_node, "functionAnd(" + target_node]
+        new_lines = [line for line in lines if not any(match in line for match in possible_matches)]
+
+        new_lines.extend(repair)
+
+        lines[:] = new_lines # update the original list
+
+    def apply_repairs(self, repairs, new_filename):
+        """
+        Writes the repairs given in modrev format to a new file
+
+        Example:
+        :param repairs:
+        :param new_filename: 'booloo.lp'
+        :return:
+        """
+        print(f"Repairs: {repairs}")
+
+        with open(new_filename, 'r') as file:
+            lines = file.readlines()
+
+        for repair in repairs:
+            if isinstance(repair, list):  # repair is function change
+                self.write_new_node_functions(repair, lines)
+            elif repair.startswith("edge") and len(repair.split(",")) == 3:  # repair is a new edge
+                self.write_new_edge(repair, lines)
+            elif repair.startswith("edge"):  # repair is a flipped edge
+                self.write_flip_edge(repair, lines)
+            else:
+                raise Exception(f"Invalid repair: {repair}")
+
+        with open(new_filename, 'w') as file:
+            file.writelines(lines)
+
+    def _repair(self, node, repair_action, repair_file):
+        """
+        Receives a repair action associated with a single repair option of a node,
+        which is a string in the modrev output format.
+        Example:
+        :param node: v1
+        :param repair_action: E,v1,v2:F,(v1 && v3)
+        """
+
+        print(f"Repairing node {node} with action: {repair_action}")
+
+        repair_steps = self.get_repair_steps(repair_action)
+        converted_repairs = [self.convert_repair_operation(op, node) for op in repair_steps]
+
+        self.apply_repairs(converted_repairs, repair_file)  # writes these to the file
+        print(f"Repairs written to {repair_file}")
+
+        new_lqm = biolqm.load(repair_file)
+        return ModRev(new_lqm)
+
+    def add_fixed_nodes(self, fixed_nodes, filename):
+        if fixed_nodes is None or len(fixed_nodes) == 0:
             return
-
-        print(f"Repairing {target_node} with {new_function}")
-
-        parsed_terms = self.parse_new_function(new_function)
-        print(f"Parsed terms: {parsed_terms}")
-
-        # compute new mdd
-        ExpressionStack = japi.java.jvm.org.colomoto.biolqm.io.antlr.ExpressionStack
-        stack = ExpressionStack(operandFactory)
-        stack.clear()
-
-        for term_index in range(len(parsed_terms)):
-            num_nodes = 0
-            for element_index in range(len(parsed_terms[term_index])):
-                stack.ident(parsed_terms[term_index][element_index])
-                num_nodes += 1
-
-                if num_nodes > 1:
-                    OperatorAnd = japi.java.jvm.org.colomoto.biolqm.io.antlr.Operator.AND
-                    stack.operator(OperatorAnd)
-
-        if len(parsed_terms) > 1:
-            OperatorOr = japi.java.jvm.org.colomoto.biolqm.io.antlr.Operator.OR
-            total_terms = len(parsed_terms)
-            while total_terms > 1:
-                stack.operator(OperatorOr)
-                total_terms -= 1
-
-        fn = stack.done()
-        core_functions[i] = fn.getMDD(manager)
-
-        return core_functions
-
-    def _repair_option_1(self, repair_action):
-        """
-        Option 1: Create new LQM model based on editing the MDD and functions directly.
-        """
-        target_node = repair_action.split("@")[0]  # v1
-        function_id = (repair_action.split("@")[1]).split(",")[0]  # F1
-        new_function = (repair_action.split("@")[1]).split(",")[1]  # (v2) || (v3)
-
-        core_nodes = self.lqm.getComponents()
-        core_functions = self.lqm.getLogicalFunctions()
-        ddmanager = self.lqm.getMDDManager()
-        print(f"Core nodes: {core_nodes}")
-        print(f"Core node 0: {core_nodes[0]}")
-        print(f"Core functions: {core_functions}")
-        print(f"DD Manager: {ddmanager}")
-
-        print("Computing new function")
-        core_functions = self.compute_new_function(core_nodes, core_functions, target_node, new_function)
-
-        LogicalModelImpl = japi.java.jvm.org.colomoto.biolqm.LogicalModelImpl
-        new_lqm = LogicalModelImpl(core_nodes, ddmanager, core_functions)
-
-        return ModRev(new_lqm)
-
-    def _repair_option_2(self, repair_action):
-        """
-        Option 2: Write the model to the file and load it
-        """
-        target_node = repair_action.split("@")[0]  # v1
-        function_id = (repair_action.split("@")[1]).split(",")[0]  # F1
-        new_function = (repair_action.split("@")[1]).split(",")[1]  # (v2) || (v3)
-
-        new_lines = []
-        with open(self.modrev_file, "r") as f:
-            # find all instances of functionOr(target_node, _)
-            #   and functionAnd(target_node, _, _)
-            #   and delete them
-
-            for line in f.readlines():
-                if not line.startswith(f"functionOr({target_node}") and not line.startswith(
-                        f"functionAnd({target_node}"):
-                    new_lines.append(line)
-
-            parsed_function = self.parse_new_function(new_function)
-
-            # and then go to the append functionOr(target_node, 1..x)
-            Or = f"..{len(parsed_function)}" if len(parsed_function) > 1 else ""
-            new_lines.append(f"functionOr({target_node},1{Or}).\n")
-
-            for term_index in range(len(parsed_function)):
-                for elem in parsed_function[term_index]:
-                    new_lines.append(f"functionAnd({target_node},{term_index + 1},{elem}).\n")
-
-        filename = new_output_file("lp")
-        with open(filename, "w") as f2:
-            for line in new_lines:
-                f2.write(line)
-        print(f"Filename: {filename}")
-
-        new_lqm = biolqm.load(filename)
-
-        new_filename = save(new_lqm)
-
-        print(f"New Filename: {new_filename}")
-
-        return ModRev(new_lqm)
-
-    def add_fixed_nodes(self, fixed_nodes):
-        if fixed_nodes is None:
-            fixed_nodes = []
 
         nodes = self.get_nodes()
         for node in fixed_nodes:
             if node not in nodes:
                 raise Exception(f"Invalid fixed node: {node}")
 
-        with open(self.modrev_file, 'r') as file:
+        with open(filename, 'r') as file:
             lines = file.readlines()
 
         last_vertex_idx = next((i for i, line in reversed(list(enumerate(lines))) if line.startswith("vertex")))
@@ -347,20 +420,45 @@ class ModRev:
                 lines.insert(last_vertex_idx + 1, fixed_node)
                 self.dirty_flag = True
 
-        with open(self.modrev_file, 'w') as file:
+        with open(filename, 'w') as file:
             file.writelines(lines)
 
-    def generate_repairs(self, repair, fixed_nodes=None):
+    def create_and_write_to_new_file(self, fixed_nodes=None):
+        """
+        Creates a new file with the current model and returns the filename
+        """
+        new_filename = new_output_file("lp")
+        with open(self.modrev_file, 'r') as file:
+            lines = file.readlines()
+        with open(new_filename, 'w') as file:
+            file.writelines(lines)
 
-        if not self.repairs[repair]:
-            raise Exception("Invalid repair")
+        self.add_fixed_nodes(fixed_nodes, new_filename)
 
-        self.add_fixed_nodes(fixed_nodes)
+        return new_filename
 
-        repair_action = self.repairs[repair]  # v1@F1,(v2) || (v3)
+    def generate_repairs(self, repair_options, fixed_nodes=None):
+        """
+        Generates the repaired models.
+        repair_options is a dictionary with the following format:
+        {'node': repair_option, ...}
+        and repair_option is a simple integer, associated with the repair option to be used.
 
-        flag = False
-        if flag:
-            return self._repair_option_1(repair_action)  # edit lqm directly
-        else:
-            return self._repair_option_2(repair_action)  # write to file
+        :param repair_options:
+        :param fixed_nodes:
+        :return:
+        """
+        for node, option in repair_options.items():
+            if not self.repairs[node]:
+                raise Exception("Invalid repair node")
+
+            if not self.repairs[node][option]:
+                raise Exception("Invalid repair option")
+
+        new_file = self.create_and_write_to_new_file(fixed_nodes)
+
+        repaired_models = []
+        for node, repair_action in repair_options.items():
+            repaired_models.append(self._repair(node, self.repairs[node][repair_action], new_file))
+
+        return repaired_models[-1]
