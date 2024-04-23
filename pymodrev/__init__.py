@@ -7,12 +7,12 @@ import biolqm
 
 def reduce_to_prime_implicants(lqm):
     # BioLQM.ModRevExport outputs the prime implicants
-    exported_model_file = save(lqm, "lp")
+    exported_model_file = save(lqm)
     print(f"Exported model to {exported_model_file}")
     return biolqm.load(exported_model_file, "lp")
 
 
-def save(model, format=None):
+def save(model, format="lp"):
     filename = new_output_file(format)
     return biolqm.save(model, filename, format)
 
@@ -29,11 +29,14 @@ class ModRev:
         self.observations = {}
         self.repairs = {}
 
+    def get_nodes(self):
+        return [node.toString() for node in self.lqm.getComponents()]
+
     def _save_model_to_modrev_file(self):
         """
         Saves the current model to a file in modrev format
         """
-        self.modrev_file = save(self.lqm, "lp")
+        self.modrev_file = save(self.lqm)
         self.dirty_flag = False
 
     def _run_modrev(self, *args):
@@ -96,6 +99,33 @@ class ModRev:
         print(f"Observations were successfully written to {observation_filename}")
         return observation_filename
 
+    def is_consistent(self):
+        """
+        Checks if the current state of the model is consistent
+        """
+        if self.dirty_flag:
+            self._save_model_to_modrev_file()
+
+        result = self._run_modrev('-m', self.modrev_file, '-obs', self.obs_to_modrev_format(), '-v', '0', '-cc')
+
+        if not result or result.returncode != 0:
+            raise Exception(f"Error running modrev: {result}")
+
+        output = json.loads(result.stdout)
+        return output.get("consistent", False)
+
+    def check_valid_observation(self, obs):
+        """
+        Checks if the observation is valid
+        """
+        core_nodes = self.get_nodes()
+        if isinstance(obs, list) and len(obs) > len(core_nodes):
+            raise Exception(f"Observation size invalid: {len(core_nodes)}")
+        if isinstance(obs, dict):
+            for elem in obs.keys():
+                if elem not in core_nodes:
+                    raise Exception(f"Observation node invalid: {elem}")
+
     def add_obs(self, obs, name=None):
         """
         Adds an observation to the dict
@@ -108,26 +138,12 @@ class ModRev:
         :param name:
         :return:
         """
+        print(self.get_nodes())
+        self.check_valid_observation(obs)
         self.dirty_flag = True
         if not name:
             name = f"observation_{len(self.observations.keys()) + 1}"
         self.observations[name] = obs
-
-    def is_consistent(self):
-        """
-        Checks if the current state of the model is consistent
-        """
-        if self.dirty_flag:
-            self._save_model_to_modrev_file()
-
-        result = self._run_modrev('-m', self.modrev_file, '-obs', self.obs_to_modrev_format(), '-v', '0', '-cc')
-
-        if not result or result.returncode != 0:
-            print(f"Error running modrev: {result}")
-            return False
-
-        output = json.loads(result.stdout)
-        return output.get("consistent", False)
 
     def remove_obs(self, key):
         """
@@ -141,6 +157,12 @@ class ModRev:
         """
         Sets the observation dict
         """
+        if not isinstance(observations_dict, dict):
+            raise Exception("Observations must be a dictionary")
+
+        for key, value in observations_dict.items():
+            self.check_valid_observation(value)
+
         self.observations = observations_dict
         self.dirty_flag = True
 
@@ -154,8 +176,7 @@ class ModRev:
         result = self._run_modrev('-m', self.modrev_file, '-obs', self.obs_to_modrev_format(), '-v', '0')
 
         if not result or result.returncode != 0:
-            print(f"Error running modrev: {result}")
-            return
+            raise Exception(f"Error running modrev: {result}")
 
         # output of modrev comes in format:
         # change function to v1 = v2 || v3
@@ -180,7 +201,7 @@ class ModRev:
         print(f"Function terms: {function_terms}")
         print(f"Function elements: {function_elements}")
 
-        parsed_terms = [[item.strip().replace('(', '').replace(')', '').replace("\'", "")]
+        parsed_terms = [[item.strip().replace('(', '').replace(')', '')]
                         for sublist in function_elements for item in sublist]
 
         print(f"Clean data: {parsed_terms}")
@@ -189,6 +210,7 @@ class ModRev:
 
     def compute_new_function(self, core_nodes, core_functions, target_node, new_function):
 
+        # FIXME, manager not workings
         # NOTE WE COULD JUST WRITE THE LQM FILE TO DISK, EDIT THE .lp FILE AND LOAD
 
         OperandFactory = japi.java.jvm.org.colomoto.mddlib.logicalfunction.SimpleOperandFactory
@@ -238,15 +260,10 @@ class ModRev:
 
         return core_functions
 
-    def generate_repairs(self, repair):
+    def _repair_option_1(self, repair_action):
         """
-
+        Option 1: Create new LQM model based on editing the MDD and functions directly.
         """
-        if not self.repairs[repair]:
-            print("Invalid repair")
-            return
-
-        repair_action = self.repairs[repair]  # v1@F1,(v2) || (v3)
         target_node = repair_action.split("@")[0]  # v1
         function_id = (repair_action.split("@")[1]).split(",")[0]  # F1
         new_function = (repair_action.split("@")[1]).split(",")[1]  # (v2) || (v3)
@@ -255,6 +272,7 @@ class ModRev:
         core_functions = self.lqm.getLogicalFunctions()
         ddmanager = self.lqm.getMDDManager()
         print(f"Core nodes: {core_nodes}")
+        print(f"Core node 0: {core_nodes[0]}")
         print(f"Core functions: {core_functions}")
         print(f"DD Manager: {ddmanager}")
 
@@ -265,3 +283,84 @@ class ModRev:
         new_lqm = LogicalModelImpl(core_nodes, ddmanager, core_functions)
 
         return ModRev(new_lqm)
+
+    def _repair_option_2(self, repair_action):
+        """
+        Option 2: Write the model to the file and load it
+        """
+        target_node = repair_action.split("@")[0]  # v1
+        function_id = (repair_action.split("@")[1]).split(",")[0]  # F1
+        new_function = (repair_action.split("@")[1]).split(",")[1]  # (v2) || (v3)
+
+        new_lines = []
+        with open(self.modrev_file, "r") as f:
+            # find all instances of functionOr(target_node, _)
+            #   and functionAnd(target_node, _, _)
+            #   and delete them
+
+            for line in f.readlines():
+                if not line.startswith(f"functionOr({target_node}") and not line.startswith(
+                        f"functionAnd({target_node}"):
+                    new_lines.append(line)
+
+            parsed_function = self.parse_new_function(new_function)
+
+            # and then go to the append functionOr(target_node, 1..x)
+            Or = f"..{len(parsed_function)}" if len(parsed_function) > 1 else ""
+            new_lines.append(f"functionOr({target_node},1{Or}).\n")
+
+            for term_index in range(len(parsed_function)):
+                for elem in parsed_function[term_index]:
+                    new_lines.append(f"functionAnd({target_node},{term_index + 1},{elem}).\n")
+
+        filename = new_output_file("lp")
+        with open(filename, "w") as f2:
+            for line in new_lines:
+                f2.write(line)
+        print(f"Filename: {filename}")
+
+        new_lqm = biolqm.load(filename)
+
+        new_filename = save(new_lqm)
+
+        print(f"New Filename: {new_filename}")
+
+        return ModRev(new_lqm)
+
+    def add_fixed_nodes(self, fixed_nodes):
+        if fixed_nodes is None:
+            fixed_nodes = []
+
+        nodes = self.get_nodes()
+        for node in fixed_nodes:
+            if node not in nodes:
+                raise Exception(f"Invalid fixed node: {node}")
+
+        with open(self.modrev_file, 'r') as file:
+            lines = file.readlines()
+
+        last_vertex_idx = next((i for i, line in reversed(list(enumerate(lines))) if line.startswith("vertex")))
+
+        for node in fixed_nodes:
+            fixed_node = f"fixed({node}).\n"
+            if fixed_node not in lines:
+                lines.insert(last_vertex_idx + 1, fixed_node)
+                self.dirty_flag = True
+
+        with open(self.modrev_file, 'w') as file:
+            file.writelines(lines)
+
+    def generate_repairs(self, repair, fixed_nodes=None):
+
+        if not self.repairs[repair]:
+            raise Exception("Invalid repair")
+
+        self.add_fixed_nodes(fixed_nodes)
+
+        repair_action = self.repairs[repair]  # v1@F1,(v2) || (v3)
+
+        flag = False
+        if flag:
+            return self._repair_option_1(repair_action)  # edit lqm directly
+        else:
+            return self._repair_option_2(repair_action)  # write to file
