@@ -8,7 +8,6 @@ import biolqm
 def reduce_to_prime_implicants(lqm):
     # BioLQM.ModRevExport outputs the prime implicants
     exported_model_file = save(lqm)
-    print(f"Exported model to {exported_model_file}")
     return biolqm.load(exported_model_file, "lp")
 
 
@@ -23,14 +22,25 @@ class ModRev:
     def __init__(self, lqm):
         self.dirty_flag = None
         self.modrev_file = None
+        self.observation_file = None
         self.lqm = lqm  # bioLQM model JavaObject
         self.prime_impl = reduce_to_prime_implicants(lqm)
         self._save_model_to_modrev_file()
         self.observations = {}
         self.repairs = {}
 
+    def print(self):
+        """
+        Reads the model from a file
+        """
+        with open(self.modrev_file, 'r') as file:
+            print(file.read())
+
     def get_nodes(self):
         return [node.toString() for node in self.lqm.getComponents()]
+
+    def get_observations(self):
+        return self.observations
 
     def _save_model_to_modrev_file(self):
         """
@@ -98,7 +108,7 @@ class ModRev:
                 for node, value in nodes.items():
                     file.write(f"obs({profile}, {node.lower()}, {value})\n")
 
-        print(f"Observations were successfully written to {observation_filename}")
+        self.observation_file = observation_filename
         return observation_filename
 
     def is_consistent(self):
@@ -116,17 +126,29 @@ class ModRev:
         output = json.loads(result.stdout)
         return output.get("consistent", False)
 
+    def convert_obs_to_dict(self, obs):
+        """
+        Converts an observation to a dictionary
+        """
+        if isinstance(obs, list):
+            obs = {self.get_nodes()[i]: obs[i] for i in range(len(obs))}
+        return obs
+
     def check_valid_observation(self, obs):
         """
         Checks if the observation is valid
         """
         core_nodes = self.get_nodes()
-        if isinstance(obs, list) and len(obs) > len(core_nodes):
+        if not isinstance(obs, list) and not isinstance(obs, dict):
+            raise Exception("Observation must be a list or a dictionary")
+        elif isinstance(obs, list) and len(obs) > len(core_nodes):
             raise Exception(f"Observation size invalid: {len(obs)}. Should be at most {len(core_nodes)}.")
-        if isinstance(obs, dict):
+        elif isinstance(obs, dict):
             for elem in obs.keys():
                 if elem not in core_nodes:
                     raise Exception(f"Observation node invalid: {elem}")
+
+        return self.convert_obs_to_dict(obs)
 
     def add_obs(self, obs, name=None):
         """
@@ -141,11 +163,11 @@ class ModRev:
         :return:
         """
         print(self.get_nodes())
-        self.check_valid_observation(obs)
+        new_obs = self.check_valid_observation(obs)
         self.dirty_flag = True
         if not name:
             name = f"observation_{len(self.observations.keys()) + 1}"
-        self.observations[name] = obs
+        self.observations[name] = new_obs
 
     def remove_obs(self, key):
         """
@@ -162,10 +184,11 @@ class ModRev:
         if not isinstance(observations_dict, dict):
             raise Exception("Observations must be a dictionary")
 
+        new_dict = {}
         for key, value in observations_dict.items():
-            self.check_valid_observation(value)
+            new_dict[key] = self.check_valid_observation(value)
 
-        self.observations = observations_dict
+        self.observations = new_dict
         self.dirty_flag = True
 
     def stats(self):
@@ -191,6 +214,10 @@ class ModRev:
         output = result.stdout.strip("\n")
         inconsistent_nodes = output.split("/")  # [v2@E,v1,v2:F,(v1 && v3);E,v3,v2:F,(v1 && v3)]
 
+        if "not possible" in output or "consistent" in output:
+            print(output)
+            return
+        
         for node in inconsistent_nodes:
             target_node, node_repairs = node.split("@")
             repair_options = node_repairs.split(";")
