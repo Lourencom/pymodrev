@@ -24,6 +24,7 @@ class ModRev:
         self.modrev_file = None
         self.observation_file = None
         self.lqm = lqm  # bioLQM model JavaObject
+        self._lowercase_all_nodes() # hacky fix for now, we will lowercase all nodes
         self.prime_impl = reduce_to_prime_implicants(lqm)
         self._save_model_to_modrev_file()
         self.observations = {}
@@ -110,6 +111,14 @@ class ModRev:
 
         self.observation_file = observation_filename
         return observation_filename
+
+    def _lowercase_all_nodes(self):
+        """
+        Lowercases all nodes in the model
+        """
+        for node in self.lqm.getComponents():
+            node.setName(node.getName().lower())
+            node.setNodeID(node.getNodeID().lower())
 
     def is_consistent(self):
         """
@@ -217,7 +226,7 @@ class ModRev:
         if "not possible" in output or "consistent" in output:
             print(output)
             return
-        
+
         for node in inconsistent_nodes:
             target_node, node_repairs = node.split("@")
             repair_options = node_repairs.split(";")
