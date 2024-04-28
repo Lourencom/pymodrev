@@ -200,15 +200,27 @@ class ModRev:
         self.observations = new_dict
         self.dirty_flag = True
 
-    def stats(self):
+    def stats(self, observation_file=None, state_scheme=None):
         """
         Shows possible reparation actions in a friendly manner
         """
         if self.dirty_flag:
             self._save_model_to_modrev_file()
 
-        result = self._run_modrev('-m', self.modrev_file, '-obs', self.obs_to_modrev_format(), '-v', '0')
+        obs = observation_file if observation_file else self.obs_to_modrev_format()
 
+        if state_scheme is None:
+            result = self._run_modrev('-m', self.modrev_file, '-obs', obs, '-v', '0')
+        elif state_scheme == "steady":
+            result = self._run_modrev('-m', self.modrev_file, '-obs', obs, '-ot',  'ss', '-v', '0')
+        elif state_scheme == "synchronous":
+            if obs == self.obs_to_modrev_format():
+                raise Exception("Time-series observations not implemented yet in python."
+                                "Pass an observation file with observation_file=...")
+            else:
+                result = self._run_modrev('-m', self.modrev_file, '-obs', obs, '-v', '0', '-up', 's')
+        else:
+            raise Exception("Invalid state scheme")
 
         # FIXME: this a temporary hardcode for testing purposes
         # result = self._run_modrev('-m', '/opt/ModRev/examples/model.lp', '-obs', '/opt/ModRev/examples/obsTS01.lp', '-up', 's', '-v', '0')
